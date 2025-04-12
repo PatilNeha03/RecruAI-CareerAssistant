@@ -13,6 +13,10 @@ from crewai import Agent, Task, Crew
 from datetime import datetime, timezone
 import os
 import re
+import tempfile
+from pymongo import MongoClient
+from urllib.parse import quote_plus
+from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 
 os.environ["OPENAI_API_KEY"] = "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"
 # 🔐 Load API key from environment variable
@@ -24,6 +28,13 @@ RESUME_DIR = os.path.join(BASE_DIR, 'data', 'resumes')
 JD_DIR = os.path.join(BASE_DIR, 'data', 'job_descriptions')
 STATUS_DIR = os.path.join(BASE_DIR, 'data', 'application_status')
 
+# Force safe temp directory use for caching (especially on Hugging Face Spaces)
+safe_cache_path = os.path.join(tempfile.gettempdir(), "hf_cache")
+os.makedirs(safe_cache_path, exist_ok=True)
+
+os.environ["TRANSFORMERS_CACHE"] = safe_cache_path
+os.environ["HF_HOME"] = safe_cache_path
+os.environ["HOME"] = tempfile.gettempdir() 
 
 def extract_formatted_text(file_path):
     """
@@ -143,13 +154,22 @@ def process_resumes():
 df = process_resumes()
 # Display DataFrame
 
+# Get the Mongo URI from Hugging Face secret (or .env locally)
+mongo_uri = os.getenv("MONGO_URI")  # This is securely injected
 
-mongo_client = MongoClient("mongodb://localhost:27017/")
+# Use the URI directly
+mongo_client = MongoClient(mongo_uri,serverSelectionTimeoutMS=30000, connectTimeoutMS=30000, socketTimeoutMS=30000)
 db = mongo_client["resume_db"]
 formatted_resume_collection = db["formatted_resumes"]
 
-client = chromadb.PersistentClient(path="./chroma_db")
-collection = client.get_or_create_collection("plain_resumes")
+writable_path = os.path.join(tempfile.gettempdir(), "chroma_db")
+client = chromadb.PersistentClient(path=writable_path)
+embedding_function = OpenAIEmbeddingFunction(api_key=os.getenv("OPENAI_API_KEY"))
+collection = client.get_or_create_collection(
+    name="plain_resumes",
+    embedding_function=embedding_function
+)
+
 
 
 def store_to_chromadb_and_mongodb(df):
@@ -213,19 +233,6 @@ def store_to_chromadb_and_mongodb(df):
         print(f"Stored in ChromaDB: {jd_doc_id}")
 
 
-store_to_chromadb_and_mongodb(df)
-
-# MongoDB connection string (adjust it as needed)
-MONGO_URI = "mongodb://localhost:27017"
-DATABASE_NAME = "resume_db"
-FORMATTED_COLLECTION = "formatted_resumes"
-
-# Connect to MongoDB
-client = MongoClient(MONGO_URI)
-db = client[DATABASE_NAME]
-formatted_resume_collection = db[FORMATTED_COLLECTION]
-
-
 def retrieve_formatted_resumes_as_df():
     """Retrieve unique formatted resume data from MongoDB and return it as a DataFrame"""
 
@@ -253,15 +260,6 @@ def retrieve_formatted_resumes_as_df():
     df = pd.DataFrame(resume_list)
     return df
 
-
-# Example usage: retrieve unique formatted resumes as a DataFrame
-formatted_resume_df = retrieve_formatted_resumes_as_df()
-print(formatted_resume_df)
-# Initialize ChromaDB client and collection
-client = chromadb.PersistentClient(path="./chroma_db")  # Use the correct path if needed
-collection = client.get_or_create_collection(name="plain_resumes")
-
-
 def retrieve_all_resumes():
     """Retrieve all resumes stored in ChromaDB and return as a DataFrame"""
     results = collection.get()  # Retrieves all stored documents
@@ -278,24 +276,13 @@ def retrieve_all_resumes():
     df = pd.DataFrame(resume_list)
     return df
 
-
-# Retrieve all resumes
+# retrieve formatted resumes
+formatted_resume_df = retrieve_formatted_resumes_as_df()
+# Retrieve plain resumes
 plain_resumes_df = retrieve_all_resumes()
 
 INPUT_DIR = os.path.join(BASE_DIR, 'data', 'inputdata')
 os.makedirs(INPUT_DIR, exist_ok=True)
-
-# Initialize empty DataFrames if not already defined
-try:
-    formatted_resume_df
-except NameError:
-    formatted_resume_df = pd.DataFrame(
-        columns=["Resume File", "Formatted Resume", "Job Description", "Application Status"])
-
-try:
-    plain_resumes_df
-except NameError:
-    plain_resumes_df = pd.DataFrame(columns=["Resume File", "Plain Text Resume", "Metadata"])
 
 
 # Save uploaded file to disk (used by backend functions)
