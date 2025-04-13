@@ -234,31 +234,35 @@ def store_to_chromadb_and_mongodb(df):
 
 
 def retrieve_formatted_resumes_as_df():
-    """Retrieve unique formatted resume data from MongoDB and return it as a DataFrame"""
+    """Retrieve unique formatted resume data from MongoDB and return as a DataFrame"""
+    try:
+        formatted_resumes = list(formatted_resume_collection.find())
+    except Exception as e:
+        print(f"❌ MongoDB fetch failed: {e}")
+        return pd.DataFrame(columns=["Resume File", "Formatted Resume", "Job Description", "Application Status"])
 
-    # Retrieve all documents from the collection
-    formatted_resumes = formatted_resume_collection.find()
+    if not formatted_resumes:
+        print("⚠️ No resumes found in MongoDB collection 'formatted_resumes'")
+        return pd.DataFrame(columns=["Resume File", "Formatted Resume", "Job Description", "Application Status"])
 
-    # Convert the results into a list of dictionaries while ensuring unique entries
     resume_list = []
-    seen_files = set()  # To track unique resume files
+    seen_files = set()
 
     for resume in formatted_resumes:
-        resume_file = resume['resume_file']
+        resume_file = resume.get("resume_file", None)
+        if not resume_file or resume_file in seen_files:
+            continue
 
-        # Only append if the resume_file hasn't been encountered before
-        if resume_file not in seen_files:
-            seen_files.add(resume_file)
-            resume_list.append({
-                "Resume File": resume['resume_file'],
-                "Formatted Resume": resume['formatted_resume'],
-                "Job Description": resume['job_description'],
-                "Application Status": resume['application_status']
-            })
+        seen_files.add(resume_file)
+        resume_list.append({
+            "Resume File": resume_file,
+            "Formatted Resume": resume.get("formatted_resume", ""),
+            "Job Description": resume.get("job_description", ""),
+            "Application Status": resume.get("application_status", "")
+        })
 
-    # Convert the list of dictionaries to a DataFrame
-    df = pd.DataFrame(resume_list)
-    return df
+    return pd.DataFrame(resume_list)
+
 
 def retrieve_all_resumes():
     """Retrieve all resumes stored in ChromaDB and return as a DataFrame"""
@@ -276,8 +280,6 @@ def retrieve_all_resumes():
     df = pd.DataFrame(resume_list)
     return df
 
-# retrieve formatted resumes
-formatted_resume_df = retrieve_formatted_resumes_as_df()
 # Retrieve plain resumes
 plain_resumes_df = retrieve_all_resumes()
 
@@ -400,10 +402,12 @@ def upload_rejected_resume_local_to_df(resume_filename, jd_text, application_sta
 
 # === 1. FORMATTING COMPLIANCE CHECK ===
 def run_formatting_compliance_last():
-    global formatted_resume_df
 
-    if formatted_resume_df.empty:
-        return "⚠️ DataFrame is empty."
+    # ✅ Load data here to avoid startup-time Mongo crash
+    formatted_resume_df = retrieve_formatted_resumes_as_df()
+
+    if formatted_resume_df.empty or "Formatted Resume" not in formatted_resume_df.columns:
+        return "⚠️ DataFrame is empty or missing expected columns."
 
     last_row = formatted_resume_df.iloc[-1]
     formatted_text = last_row["Formatted Resume"]
@@ -414,85 +418,85 @@ def run_formatting_compliance_last():
         "Your task is to analyze formatting features extracted from resumes and identify ATS-related issues."
     )
 
-    user_prompt = ats_prompt = f"""
-    You are an expert ATS (Applicant Tracking System) evaluator and resume coach.
+    user_prompt = f"""
+You are an expert ATS (Applicant Tracking System) evaluator and resume coach.
 
-    Your task is to evaluate the following resume in detail for ATS compatibility and effectiveness, based on best practices from tools like Jobscan, Resumeworded, and major employers' ATS systems.
+Your task is to evaluate the following resume in detail for ATS compatibility and effectiveness, based on best practices from tools like Jobscan, Resumeworded, and major employers' ATS systems.
 
-    === RESUME TEXT ===
-    {formatted_text}
+=== RESUME TEXT ===
+{formatted_text}
 
-    Please evaluate the resume using these criteria and return clear, structured feedback:
+Please evaluate the resume using these criteria and return clear, structured feedback:
 
-    ---
+---
 
-    1. **Font & Formatting Compliance**
-    - Is the font ATS-safe (e.g., Calibri, Arial, Times New Roman)?
-    - Are the font sizes consistent (10–12pt for body, 12–14pt headers)?
-    - Is the layout one-column, without tables, text boxes, columns, headers, footers, or images?
+1. **Font & Formatting Compliance**
+- Is the font ATS-safe (e.g., Calibri, Arial, Times New Roman)?
+- Are the font sizes consistent (10–12pt for body, 12–14pt headers)?
+- Is the layout one-column, without tables, text boxes, columns, headers, footers, or images?
 
-    2. **File Type & Layout Clarity**
-    - Does the resume appear parseable by an ATS (no graphics, icons, or scanned content)?
-    - Does it avoid fancy design elements and maintain clean spacing?
+2. **File Type & Layout Clarity**
+- Does the resume appear parseable by an ATS (no graphics, icons, or scanned content)?
+- Does it avoid fancy design elements and maintain clean spacing?
 
-    3. **Keyword Optimization & Contextual Match**
-    - Does the resume include **exact keywords** from the job description (skills, tools, job titles)?
-    - Are both **hard** and **soft** skills present?
-    - Is there good keyword distribution across the **Summary**, **Experience**, and **Skills**?
+3. **Keyword Optimization & Contextual Match**
+- Does the resume include **exact keywords** from the job description (skills, tools, job titles)?
+- Are both **hard** and **soft** skills present?
+- Is there good keyword distribution across the **Summary**, **Experience**, and **Skills**?
 
-    4. **Section Title Clarity**
-    - Are standard sections present with conventional labels like:
-      - "Professional Experience", "Education", "Skills", "Certifications", "Summary"?
-    - Flag if any non-standard or unclear section headings are used.
+4. **Section Title Clarity**
+- Are standard sections present with conventional labels like:
+  - "Professional Experience", "Education", "Skills", "Certifications", "Summary"?
+- Flag if any non-standard or unclear section headings are used.
 
-    5. **Bullet Usage & Structure**
-    - Does the resume use clean bullet points instead of paragraphs?
-    - Are bullets concise (1–2 lines), with consistent symbols like •?
+5. **Bullet Usage & Structure**
+- Does the resume use clean bullet points instead of paragraphs?
+- Are bullets concise (1–2 lines), with consistent symbols like •?
 
-    6. **Quantified Achievements**
-    - Are specific results or numbers included (e.g., “Improved X by 20%”)?
-    - If missing, suggest where they could be added.
+6. **Quantified Achievements**
+- Are specific results or numbers included (e.g., “Improved X by 20%”)?
+- If missing, suggest where they could be added.
 
-    7. **Contact Information**
-    - Is contact info (name, phone, email, LinkedIn) cleanly placed at the top?
-    - Is it **outside headers/footers** for parseability?
+7. **Contact Information**
+- Is contact info (name, phone, email, LinkedIn) cleanly placed at the top?
+- Is it **outside headers/footers** for parseability?
 
-    8. **Section Completeness**
-    - Are required sections **(Experience, Education, Skills, Summary)** all included?
-    - If any are missing, flag them clearly.
+8. **Section Completeness**
+- Are required sections **(Experience, Education, Skills, Summary)** all included?
+- If any are missing, flag them clearly.
 
-    9. **Skills Section Quality**
-    - Are **hard skills** and tools included (e.g., Python, SQL, Tableau)?
-    - If it lists soft skills here, suggest moving them elsewhere.
+9. **Skills Section Quality**
+- Are **hard skills** and tools included (e.g., Python, SQL, Tableau)?
+- If it lists soft skills here, suggest moving them elsewhere.
 
-    10. **Consistency & Clean Structure**
-    - Are dates consistently formatted (e.g., Jan 2020 – Mar 2022)?
-    - Are all headings, job titles, and bullets properly aligned?
+10. **Consistency & Clean Structure**
+- Are dates consistently formatted (e.g., Jan 2020 – Mar 2022)?
+- Are all headings, job titles, and bullets properly aligned?
 
-    11. **Resume Length Appropriateness**
-    - One page for <5 years experience
-    - Two pages for >5 years
-    - If it's too long or short, suggest trimming or expanding.
+11. **Resume Length Appropriateness**
+- One page for <5 years experience
+- Two pages for >5 years
+- If it's too long or short, suggest trimming or expanding.
 
-    12. **Semantic Relevance & Variation**
-    - Does the resume demonstrate understanding of the job by using natural language variation?
-    - Example: Instead of repeating "Managed", does it use synonyms like “Led”, “Oversaw”, “Directed”?
+12. **Semantic Relevance & Variation**
+- Does the resume demonstrate understanding of the job by using natural language variation?
+- Example: Instead of repeating "Managed", does it use synonyms like “Led”, “Oversaw”, “Directed”?
 
-    ---
+---
 
-    ✅ **Final Output Format**:
-    - Short Summary
-    - Bullet-based Section Feedback (one for each of the categories above)
-    - Suggested Job Title (optional)
-    - Clean formatting, no asterisks or special symbols
-    - No placeholders like [Company Name]
+✅ **Final Output Format**:
+- Short Summary
+- Bullet-based Section Feedback (one for each of the categories above)
+- Suggested Job Title (optional)
+- Clean formatting, no asterisks or special symbols
+- No placeholders like [Company Name]
 
-    Be direct and specific. Write this as feedback for a serious jobseeker optimizing for ATS.
-
-    """
+Be direct and specific. Write this as feedback for a serious jobseeker optimizing for ATS.
+"""
 
     try:
-        response = openai_client.chat.completions.create(
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -503,7 +507,7 @@ def run_formatting_compliance_last():
         )
         report = response.choices[0].message.content.strip()
     except Exception as e:
-        report = f"Error during analysis: {e}"
+        report = f"❌ Error during formatting compliance analysis: {e}"
 
     print(f"✅ Formatting check completed for: {resume_file}")
     return report
