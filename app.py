@@ -19,7 +19,7 @@ from final import (
     get_chatbot_response,
     generate_cover_letter
 )
-
+openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"]
 st.set_page_config(page_title="404: Job Not Found", layout="wide")
 
 def get_download_link(file_path, label="📄 Download here"):
