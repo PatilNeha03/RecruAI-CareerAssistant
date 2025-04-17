@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import os
 import re
 
-openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"]
+
 
 # Define folder paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
