@@ -13,28 +13,15 @@ from crewai import Agent, Task, Crew
 from datetime import datetime, timezone
 import os
 import re
-import tempfile
-from pymongo import MongoClient
-from urllib.parse import quote_plus
-from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 
-os.environ["OPENAI_API_KEY"] = "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"
-# 🔐 Load API key from environment variable
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"]
 
 # Define folder paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RESUME_DIR = os.path.join(BASE_DIR, 'data', 'resumes')
-JD_DIR = os.path.join(BASE_DIR, 'data', 'job_descriptions')
-STATUS_DIR = os.path.join(BASE_DIR, 'data', 'application_status')
+JD_DIR = os.path.join(BASE_DIR,'data','job_descriptions')
+STATUS_DIR = os.path.join(BASE_DIR,'data','application_status')
 
-# Force safe temp directory use for caching (especially on Hugging Face Spaces)
-safe_cache_path = os.path.join(tempfile.gettempdir(), "hf_cache")
-os.makedirs(safe_cache_path, exist_ok=True)
-
-os.environ["TRANSFORMERS_CACHE"] = safe_cache_path
-os.environ["HF_HOME"] = safe_cache_path
-os.environ["HOME"] = tempfile.gettempdir() 
 
 def extract_formatted_text(file_path):
     """
@@ -149,27 +136,17 @@ def process_resumes():
 
     return df
 
-
 # Run the script and get DataFrame
 df = process_resumes()
 # Display DataFrame
 
-# Get the Mongo URI from Hugging Face secret (or .env locally)
-mongo_uri = os.getenv("MONGO_URI")  # This is securely injected
 
-# Use the URI directly
-mongo_client = MongoClient(mongo_uri,serverSelectionTimeoutMS=30000, connectTimeoutMS=30000, socketTimeoutMS=30000)
+mongo_client = MongoClient("mongodb://localhost:27017/")
 db = mongo_client["resume_db"]
 formatted_resume_collection = db["formatted_resumes"]
 
-writable_path = os.path.join(tempfile.gettempdir(), "chroma_db")
-client = chromadb.PersistentClient(path=writable_path)
-embedding_function = OpenAIEmbeddingFunction(api_key=os.getenv("OPENAI_API_KEY"))
-collection = client.get_or_create_collection(
-    name="plain_resumes",
-    embedding_function=embedding_function
-)
-
+client = chromadb.PersistentClient(path="./chroma_db")
+collection = client.get_or_create_collection("plain_resumes")
 
 
 def store_to_chromadb_and_mongodb(df):
@@ -232,36 +209,53 @@ def store_to_chromadb_and_mongodb(df):
         )
         print(f"Stored in ChromaDB: {jd_doc_id}")
 
+store_to_chromadb_and_mongodb(df)
+
+# MongoDB connection string (adjust it as needed)
+MONGO_URI = "mongodb://localhost:27017"
+DATABASE_NAME = "resume_db"
+FORMATTED_COLLECTION = "formatted_resumes"
+
+# Connect to MongoDB
+client = MongoClient(MONGO_URI)
+db = client[DATABASE_NAME]
+formatted_resume_collection = db[FORMATTED_COLLECTION]
+
 
 def retrieve_formatted_resumes_as_df():
-    """Retrieve unique formatted resume data from MongoDB and return as a DataFrame"""
-    try:
-        formatted_resumes = list(formatted_resume_collection.find())
-    except Exception as e:
-        print(f"❌ MongoDB fetch failed: {e}")
-        return pd.DataFrame(columns=["Resume File", "Formatted Resume", "Job Description", "Application Status"])
+    """Retrieve unique formatted resume data from MongoDB and return it as a DataFrame"""
 
-    if not formatted_resumes:
-        print("⚠️ No resumes found in MongoDB collection 'formatted_resumes'")
-        return pd.DataFrame(columns=["Resume File", "Formatted Resume", "Job Description", "Application Status"])
+    # Retrieve all documents from the collection
+    formatted_resumes = formatted_resume_collection.find()
 
+    # Convert the results into a list of dictionaries while ensuring unique entries
     resume_list = []
-    seen_files = set()
+    seen_files = set()  # To track unique resume files
 
     for resume in formatted_resumes:
-        resume_file = resume.get("resume_file", None)
-        if not resume_file or resume_file in seen_files:
-            continue
+        resume_file = resume['resume_file']
 
-        seen_files.add(resume_file)
-        resume_list.append({
-            "Resume File": resume_file,
-            "Formatted Resume": resume.get("formatted_resume", ""),
-            "Job Description": resume.get("job_description", ""),
-            "Application Status": resume.get("application_status", "")
-        })
+        # Only append if the resume_file hasn't been encountered before
+        if resume_file not in seen_files:
+            seen_files.add(resume_file)
+            resume_list.append({
+                "Resume File": resume['resume_file'],
+                "Formatted Resume": resume['formatted_resume'],
+                "Job Description": resume['job_description'],
+                "Application Status": resume['application_status']
+            })
 
-    return pd.DataFrame(resume_list)
+    # Convert the list of dictionaries to a DataFrame
+    df = pd.DataFrame(resume_list)
+    return df
+
+
+# Example usage: retrieve unique formatted resumes as a DataFrame
+formatted_resume_df = retrieve_formatted_resumes_as_df()
+print(formatted_resume_df)
+# Initialize ChromaDB client and collection
+client = chromadb.PersistentClient(path="./chroma_db")  # Use the correct path if needed
+collection = client.get_or_create_collection(name="plain_resumes")
 
 
 def retrieve_all_resumes():
@@ -280,12 +274,24 @@ def retrieve_all_resumes():
     df = pd.DataFrame(resume_list)
     return df
 
-# Retrieve plain resumes
+
+# Retrieve all resumes
 plain_resumes_df = retrieve_all_resumes()
 
-INPUT_DIR = os.path.join(BASE_DIR, 'data', 'inputdata')
+
+INPUT_DIR = os.path.join(BASE_DIR,'data', 'inputdata')
 os.makedirs(INPUT_DIR, exist_ok=True)
 
+# Initialize empty DataFrames if not already defined
+try:
+    formatted_resume_df
+except NameError:
+    formatted_resume_df = pd.DataFrame(columns=["Resume File", "Formatted Resume", "Job Description", "Application Status"])
+
+try:
+    plain_resumes_df
+except NameError:
+    plain_resumes_df = pd.DataFrame(columns=["Resume File", "Plain Text Resume", "Metadata"])
 
 # Save uploaded file to disk (used by backend functions)
 
@@ -295,7 +301,6 @@ def save_uploaded_file(file_name, file_bytes):
     with open(file_path, "wb") as f:
         f.write(file_bytes)
     return file_name  # Just returning the filename
-
 
 # === Core Function ===
 def upload_rejected_resume_local_to_df(resume_filename, jd_text, application_status):
@@ -402,12 +407,10 @@ def upload_rejected_resume_local_to_df(resume_filename, jd_text, application_sta
 
 # === 1. FORMATTING COMPLIANCE CHECK ===
 def run_formatting_compliance_last():
+    global formatted_resume_df
 
-    # ✅ Load data here to avoid startup-time Mongo crash
-    formatted_resume_df = retrieve_formatted_resumes_as_df()
-
-    if formatted_resume_df.empty or "Formatted Resume" not in formatted_resume_df.columns:
-        return "⚠️ DataFrame is empty or missing expected columns."
+    if formatted_resume_df.empty:
+        return "⚠️ DataFrame is empty."
 
     last_row = formatted_resume_df.iloc[-1]
     formatted_text = last_row["Formatted Resume"]
@@ -418,85 +421,86 @@ def run_formatting_compliance_last():
         "Your task is to analyze formatting features extracted from resumes and identify ATS-related issues."
     )
 
-    user_prompt = f"""
-You are an expert ATS (Applicant Tracking System) evaluator and resume coach.
+    user_prompt = ats_prompt = f"""
+    You are an expert ATS (Applicant Tracking System) evaluator and resume coach.
+    
+    Your task is to evaluate the following resume in detail for ATS compatibility and effectiveness, based on best practices from tools like Jobscan, Resumeworded, and major employers' ATS systems.
+    
+    === RESUME TEXT ===
+    {formatted_text}
+    
+    Please evaluate the resume using these criteria and return clear, structured feedback:
+    
+    ---
+    
+    1. **Font & Formatting Compliance**
+    - Is the font ATS-safe (e.g., Calibri, Arial, Times New Roman)?
+    - Are the font sizes consistent (10–12pt for body, 12–14pt headers)?
+    - Is the layout one-column, without tables, text boxes, columns, headers, footers, or images?
+    
+    2. **File Type & Layout Clarity**
+    - Does the resume appear parseable by an ATS (no graphics, icons, or scanned content)?
+    - Does it avoid fancy design elements and maintain clean spacing?
+    
+    3. **Keyword Optimization & Contextual Match**
+    - Does the resume include **exact keywords** from the job description (skills, tools, job titles)?
+    - Are both **hard** and **soft** skills present?
+    - Is there good keyword distribution across the **Summary**, **Experience**, and **Skills**?
+    
+    4. **Section Title Clarity**
+    - Are standard sections present with conventional labels like:
+      - "Professional Experience", "Education", "Skills", "Certifications", "Summary"?
+    - Flag if any non-standard or unclear section headings are used.
+    
+    5. **Bullet Usage & Structure**
+    - Does the resume use clean bullet points instead of paragraphs?
+    - Are bullets concise (1–2 lines), with consistent symbols like •?
+    
+    6. **Quantified Achievements**
+    - Are specific results or numbers included (e.g., “Improved X by 20%”)?
+    - If missing, suggest where they could be added.
+    
+    7. **Contact Information**
+    - Is contact info (name, phone, email, LinkedIn) cleanly placed at the top?
+    - Is it **outside headers/footers** for parseability?
+    
+    8. **Section Completeness**
+    - Are required sections **(Experience, Education, Skills, Summary)** all included?
+    - If any are missing, flag them clearly.
+    
+    9. **Skills Section Quality**
+    - Are **hard skills** and tools included (e.g., Python, SQL, Tableau)?
+    - If it lists soft skills here, suggest moving them elsewhere.
+    
+    10. **Consistency & Clean Structure**
+    - Are dates consistently formatted (e.g., Jan 2020 – Mar 2022)?
+    - Are all headings, job titles, and bullets properly aligned?
+    
+    11. **Resume Length Appropriateness**
+    - One page for <5 years experience
+    - Two pages for >5 years
+    - If it's too long or short, suggest trimming or expanding.
+    
+    12. **Semantic Relevance & Variation**
+    - Does the resume demonstrate understanding of the job by using natural language variation?
+    - Example: Instead of repeating "Managed", does it use synonyms like “Led”, “Oversaw”, “Directed”?
+    
+    ---
+    
+    ✅ **Final Output Format**:
+    - Short Summary
+    - Bullet-based Section Feedback (one for each of the categories above)
+    - Suggested Job Title (optional)
+    - Clean formatting, no asterisks or special symbols
+    - No placeholders like [Company Name]
+    
+    Be direct and specific. Write this as feedback for a serious jobseeker optimizing for ATS.
+    
+    """
 
-Your task is to evaluate the following resume in detail for ATS compatibility and effectiveness, based on best practices from tools like Jobscan, Resumeworded, and major employers' ATS systems.
-
-=== RESUME TEXT ===
-{formatted_text}
-
-Please evaluate the resume using these criteria and return clear, structured feedback:
-
----
-
-1. **Font & Formatting Compliance**
-- Is the font ATS-safe (e.g., Calibri, Arial, Times New Roman)?
-- Are the font sizes consistent (10–12pt for body, 12–14pt headers)?
-- Is the layout one-column, without tables, text boxes, columns, headers, footers, or images?
-
-2. **File Type & Layout Clarity**
-- Does the resume appear parseable by an ATS (no graphics, icons, or scanned content)?
-- Does it avoid fancy design elements and maintain clean spacing?
-
-3. **Keyword Optimization & Contextual Match**
-- Does the resume include **exact keywords** from the job description (skills, tools, job titles)?
-- Are both **hard** and **soft** skills present?
-- Is there good keyword distribution across the **Summary**, **Experience**, and **Skills**?
-
-4. **Section Title Clarity**
-- Are standard sections present with conventional labels like:
-  - "Professional Experience", "Education", "Skills", "Certifications", "Summary"?
-- Flag if any non-standard or unclear section headings are used.
-
-5. **Bullet Usage & Structure**
-- Does the resume use clean bullet points instead of paragraphs?
-- Are bullets concise (1–2 lines), with consistent symbols like •?
-
-6. **Quantified Achievements**
-- Are specific results or numbers included (e.g., “Improved X by 20%”)?
-- If missing, suggest where they could be added.
-
-7. **Contact Information**
-- Is contact info (name, phone, email, LinkedIn) cleanly placed at the top?
-- Is it **outside headers/footers** for parseability?
-
-8. **Section Completeness**
-- Are required sections **(Experience, Education, Skills, Summary)** all included?
-- If any are missing, flag them clearly.
-
-9. **Skills Section Quality**
-- Are **hard skills** and tools included (e.g., Python, SQL, Tableau)?
-- If it lists soft skills here, suggest moving them elsewhere.
-
-10. **Consistency & Clean Structure**
-- Are dates consistently formatted (e.g., Jan 2020 – Mar 2022)?
-- Are all headings, job titles, and bullets properly aligned?
-
-11. **Resume Length Appropriateness**
-- One page for <5 years experience
-- Two pages for >5 years
-- If it's too long or short, suggest trimming or expanding.
-
-12. **Semantic Relevance & Variation**
-- Does the resume demonstrate understanding of the job by using natural language variation?
-- Example: Instead of repeating "Managed", does it use synonyms like “Led”, “Oversaw”, “Directed”?
-
----
-
-✅ **Final Output Format**:
-- Short Summary
-- Bullet-based Section Feedback (one for each of the categories above)
-- Suggested Job Title (optional)
-- Clean formatting, no asterisks or special symbols
-- No placeholders like [Company Name]
-
-Be direct and specific. Write this as feedback for a serious jobseeker optimizing for ATS.
-"""
 
     try:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
+        response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -507,23 +511,20 @@ Be direct and specific. Write this as feedback for a serious jobseeker optimizin
         )
         report = response.choices[0].message.content.strip()
     except Exception as e:
-        report = f"❌ Error during formatting compliance analysis: {e}"
+        report = f"Error during analysis: {e}"
 
     print(f"✅ Formatting check completed for: {resume_file}")
     return report
 
-
-# ATS Score
+#ATS Score
 import re
 from sklearn.metrics.pairwise import cosine_similarity
-
 
 # Helper: Check for section presence
 def evaluate_section_presence(resume_text):
     required_sections = ["experience", "education", "skills", "projects", "summary"]
     found = [sec for sec in required_sections if sec in resume_text.lower()]
     return round((len(found) / len(required_sections)) * 100, 2)
-
 
 # Helper: Evaluate formatting quality
 def evaluate_formatting_score(resume_text):
@@ -534,7 +535,6 @@ def evaluate_formatting_score(resume_text):
     score = max(0, 100 - penalties * 20)
     return round(score, 2)
 
-
 # Helper: Evaluate structure (length, bullet points, dates)
 def evaluate_structure_score(resume_text):
     if len(resume_text) < 1000: return 40.0  # too short
@@ -544,7 +544,6 @@ def evaluate_structure_score(resume_text):
     if bullet_count >= 5: score += 20
     if len(date_matches) >= 3: score += 20
     return min(score, 100)
-
 
 # === MAIN: Enhanced ATS scoring ===
 def run_ats_scoring_with_embedding():
@@ -619,10 +618,15 @@ Highlight keyword overlap, formatting issues, missing sections, and give a short
         conclusion_reasoning = response.choices[0].message.content.strip()
     except Exception as e:
         conclusion_reasoning = f"(LLM reasoning failed: {e})"
-
+    matched_keywords = list(jd_keywords & resume_words)
+    unmatched_keywords = list(jd_keywords - resume_words)
     return {
         "score": final_score,
         "resume_file": resume_file,
+        "keywords": {  # Add this new section
+            "matched": matched_keywords,
+            "unmatched": unmatched_keywords
+        },
         "reasoning": {
             "Keyword Overlap": keyword_reasoning,
             "Formatting Issues": formatting_reasoning,
@@ -652,7 +656,6 @@ resume_feedback_task = Task(
     agent=resume_feedback
 )
 
-
 def get_resume_feedback(resume_text):
     from crewai import Crew, Task
 
@@ -660,16 +663,7 @@ def get_resume_feedback(resume_text):
         description=(
             f"""You are a professional career coach and resume reviewer. 
 Your task is to evaluate the resume critically and provide personalized, detailed feedback using the following format:
-
----
-
-## ✅ **Overall Resume Score**: X/10  
-Give a reason for the score, based on technical depth, relevance, formatting, and clarity.
-
----
-
-### 📌 **Strengths**  
-List 3–4 specific things done well — focus on concrete details from the resume, like quantified impact, strong tools/technologies, or clear structure.
+with proper formatting and nothing else
 
 ---
 
@@ -684,6 +678,10 @@ Point out where content is vague, repetitive, or could be improved with stronger
 3. **Grammar / Typos / Terminology**  
 Find specific errors (e.g., tool names, inconsistent abbreviations), and suggest clean alternatives.
 
+---
+
+### 📌 **Strengths**  
+List 3–4 specific things done well — focus on concrete details from the resume, like quantified impact, strong tools/technologies, or clear structure.
 ---
 
 ### 💡 **Suggestions for Additional Sections**
@@ -709,21 +707,17 @@ Here is the resume to review:
 
     return crew.kickoff()
 
-
 from io import BytesIO
-
 
 def extract_text_from_pdf(file_bytes):
     buffer = BytesIO(file_bytes)
     doc = fitz.open(stream=buffer.read(), filetype="pdf")
     return "".join([page.get_text() for page in doc])
 
-
 def extract_text_from_docx(file_bytes):
     buffer = BytesIO(file_bytes)
     doc = docx.Document(buffer)
     return "\n".join(para.text for para in doc.paragraphs)
-
 
 def extract_resume_text(file_bytes, file_name):
     if file_name.endswith(".pdf"):
@@ -732,8 +726,7 @@ def extract_resume_text(file_bytes, file_name):
         return extract_text_from_docx(file_bytes)
     return "Unsupported file format."
 
-
-# ---------- Keyword Extraction ----------
+#---------- Keyword Extraction ----------
 def extract_keywords(text, limit=10):
     words = re.findall(r'\b\w+\b', text.lower())
     stopwords = {
@@ -745,6 +738,7 @@ def extract_keywords(text, limit=10):
     return [word for word, _ in Counter(filtered).most_common(limit)]
 
 
+
 # ---------- OpenAI Embedding ----------
 def embed_text(text):
     response = openai_client.embeddings.create(
@@ -753,131 +747,6 @@ def embed_text(text):
     )
     return response.data[0].embedding
 
-
-# def get_job_recommendations(resume_text):
-#     import random, re, requests
-#     from datetime import datetime, timezone
-#     from collections import Counter
-#     from sklearn.metrics.pairwise import cosine_similarity
-#
-#     keywords = extract_keywords(resume_text, limit=10)
-#     query_keywords = [kw for kw in keywords if kw.isalpha()]
-#
-#     if not query_keywords:
-#         words = re.findall(r'\b[a-zA-Z]{3,}\b', resume_text.lower())
-#         freq_words = [word for word, _ in Counter(words).most_common(10)]
-#         query_keywords = freq_words[:5]
-#
-#     if not query_keywords:
-#         return "❌ Could not extract meaningful keywords from resume."
-#
-#     base_query = " ".join(query_keywords[:5])
-#     prefixes = ["", "now hiring", "top", "entry level", "urgent", "open roles", "hiring", "career opportunities",
-#                 "immediate openings", "junior", "senior", "contract", "full time", "part time", "remote", "flexible"]
-#     suffixes = ["", "2025", "jobs", "remote", "work from home", "contract roles", "startup", "tech", "corporate",
-#                 "consulting", "data-driven", "growth", "AI", "analytics", "entry level", "remote jobs"]
-#     varied_query = f"{random.choice(prefixes)} {base_query} {random.choice(suffixes)}".strip()
-#
-#     def fetch_jobs(query):
-#         all_jobs = []
-#         for page in range(1, 10):
-#             params = {
-#                 "query": query,
-#                 "location": "United States",
-#                 "page": str(page),
-#                 "num_pages": "1"
-#             }
-#             response = requests.get(
-#                 "https://jsearch.p.rapidapi.com/search",
-#                 headers={
-#                     "X-RapidAPI-Key": "b8f59b1df0mshd1a8487935bece1p1199f2jsn60e73872c2ec",
-#                     "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
-#                 },
-#                 params=params
-#             )
-#             if response.status_code == 200:
-#                 all_jobs.extend(response.json().get("data", []))
-#         return all_jobs
-#
-#     all_jobs = fetch_jobs(varied_query)
-#     if not all_jobs:
-#         all_jobs = fetch_jobs(base_query)
-#     if not all_jobs:
-#         return "❌ No jobs found. Try simplifying your resume or keywords."
-#
-#     seen = set()
-#     unique_jobs = []
-#     for job in all_jobs:
-#         key = (job.get("job_title"), job.get("employer_name"))
-#         if key not in seen:
-#             seen.add(key)
-#             unique_jobs.append(job)
-#
-#     random.shuffle(unique_jobs)
-#     sampled_jobs = random.sample(unique_jobs, min(25, len(unique_jobs)))
-#
-#     # This pulls the latest resume from your parsed database
-#     non_jd_df = plain_resumes_df[~plain_resumes_df["Resume File"].str.startswith("jd_")]
-#     if non_jd_df.empty:
-#         return "⚠️ No resumes to score."
-#
-#     last_resume = non_jd_df.iloc[-1]
-#     resume_file = last_resume["Resume File"]
-#     resume_text = last_resume["Plain Text Resume"]
-#
-#     print(f"🔍 Matching jobs against resume: {resume_file}")
-#
-#     try:
-#         resume_emb = embed_text(resume_text)
-#     except Exception as e:
-#         return f"❌ Embedding error: {e}"
-#
-#     scored = []
-#     for job in sampled_jobs:
-#         try:
-#             job_desc = job.get("job_description", "").strip()
-#             if not job_desc or len(job_desc) < 100:
-#                 continue
-#             job_emb = embed_text(job_desc)
-#             sim = cosine_similarity([resume_emb], [job_emb])[0][0]
-#             if sim > 0.5:
-#                 scored.append((sim, job))
-#         except Exception:
-#             continue
-#
-#     if not scored:
-#         return "❌ No relevant jobs found."
-#
-#     top_jobs = sorted(scored, key=lambda x: x[0], reverse=True)[:5]
-#
-#     results = []
-#     for score, job in top_jobs:
-#         title = job.get("job_title", "N/A")
-#         company = job.get("employer_name", "N/A")
-#         location = job.get("job_city", "N/A")
-#         posted_datetime_str = job.get("job_posted_at_datetime_utc")
-#
-#         if posted_datetime_str:
-#             posted_date = datetime.strptime(posted_datetime_str, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
-#             days_ago = (datetime.now(timezone.utc) - posted_date).days
-#             posted = f"{days_ago} days ago" if days_ago > 0 else "Today"
-#         else:
-#             posted = "Recent"
-#
-#         desc = job.get("job_description", "")[:200].replace("\n", " ").strip()
-#         desc = desc.rsplit(".", 1)[0] + "."
-#         match_percent = round(score * 100)
-#         apply_link = job.get("job_apply_link") or job.get("job_google_link", "#")
-#
-#         results.append(f"""
-# **[{title}]({apply_link}) - {company}**
-# Location: {location}
-# Posted: {posted}
-# Match Score: {match_percent}%
-# Description: {desc}
-# """)
-
-#    return "\n\n".join(results)
 
 def get_job_recommendations(resume_text):
     import random, re, requests, os
@@ -925,7 +794,7 @@ def get_job_recommendations(resume_text):
         query_keywords = freq_words[:5]
 
     if not query_keywords:
-        return []
+        return [], []
 
     base_query = " ".join(query_keywords[:5])
     prefixes = ["", "now hiring", "top", "entry level", "urgent", "open roles"]
@@ -944,7 +813,7 @@ def get_job_recommendations(resume_text):
             response = requests.get(
                 "https://jsearch.p.rapidapi.com/search",
                 headers={
-                    "X-RapidAPI-Key": "711558f77dmsh64580f0c758b489p15bd24jsn63d92b8b69dd",
+                    "X-RapidAPI-Key": "57b0057fb7msh37e77aa5c4a88e1p10797cjsnc76d2ec3dc1a",
                     "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
                 },
                 params=params
@@ -957,7 +826,7 @@ def get_job_recommendations(resume_text):
     if not all_jobs:
         all_jobs = fetch_jobs(base_query)
     if not all_jobs:
-        return []
+        return [], []
 
     seen = set()
     unique_jobs = []
@@ -978,7 +847,7 @@ def get_job_recommendations(resume_text):
 
     non_jd_df = plain_resumes_df[~plain_resumes_df["Resume File"].str.startswith("jd_")]
     if non_jd_df.empty:
-        return []
+        return [], []
 
     last_resume = non_jd_df.iloc[-1]
     resume_text = last_resume["Plain Text Resume"]
@@ -986,7 +855,7 @@ def get_job_recommendations(resume_text):
     try:
         resume_emb = embed_text(resume_text)
     except Exception:
-        return []
+        return [], []
 
     job_embedding_cache = {}
     scored = []
@@ -1008,7 +877,7 @@ def get_job_recommendations(resume_text):
             continue
 
     if not scored:
-        return []
+        return [], []
 
     top_jobs = sorted(scored, key=lambda x: x[0], reverse=True)[:5]
 
@@ -1030,6 +899,8 @@ def get_job_recommendations(resume_text):
         return filepath
 
     markdown_results = []
+    cover_letter_paths = []
+
     for score, job in top_jobs:
         title = job.get("job_title", "N/A")
         company = job.get("employer_name", "N/A")
@@ -1055,23 +926,30 @@ def get_job_recommendations(resume_text):
 
         # Generate and save cover letter
         cover_letter_text, error = generate_cover_letter_for_job(resume_text, job)
-        if not cover_letter_text:
-            cover_letter_text = "⚠️ Could not generate cover letter."
-            file_path = "N/A"
-        else:
+        file_path = None
+
+        if cover_letter_text and not error:
             filename = sanitize_filename(f"{title}_{company}.docx")
             file_path = save_cover_letter(cover_letter_text, filename)
+
+        cover_letter_paths.append(file_path)
 
         markdown_results.append(f"""
 ### 🎯 [{title}]({apply_link}) - {company}
 **Location**: {location}  
 **Posted**: {posted}  
 **Match Score**: {match_percent}%  
-**Description**: {desc}  
-📄 **[Cover Letter]({file_path})**
+**Description**: {desc} 
 """)
 
-    return "\n---\n".join(markdown_results), [file_path for _, job in top_jobs if file_path and file_path != "N/A"]
+    # Clean markdown and filter valid paths
+    clean_markdown = "\n---\n".join(
+        job.replace('</div>', '').replace('</.div>', '').strip()
+        for job in markdown_results
+    )
+    valid_paths = [path for path in cover_letter_paths if path is not None]
+
+    return clean_markdown, valid_paths
 
 
 # ---------- Chatbot Agent ----------
@@ -1081,7 +959,6 @@ career_chatbot = Agent(
     verbose=True,
     backstory="You're an experienced career assistant with deep knowledge of resumes, interview strategies, job search tips, and professional guidance. You respond in a friendly and concise manner."
 )
-
 
 def get_chatbot_response(user_query):
     chatbot_task = Task(
@@ -1101,7 +978,6 @@ Answer the following user question clearly, concisely, and accurately:
     )
 
     return crew.kickoff()
-
 
 def generate_cover_letter():
     import os
